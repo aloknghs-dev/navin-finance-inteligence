@@ -27,9 +27,9 @@ def test_browser_modules_and_real_isolation(tmp_path):
     for name in pages:
      page.locator(f'[data-nav={name}]').click();page.wait_for_function("() => !document.querySelector('#content').textContent.includes('Loading financial')");assert 'Synthetic demonstration' in page.locator('#content').inner_text()
     page.locator('[data-nav=overview]').click();page.wait_for_function("() => document.querySelector('#content').textContent.includes('Synthetic demonstration')")
-    (root/'docs').mkdir(exist_ok=True);page.screenshot(path=str(root/'docs/preview.png'),full_page=True)
+    screens=Path(os.environ.get('NAVIN_PREVIEW_DIR',str(tmp_path/'screenshots')));screens.mkdir(parents=True,exist_ok=True);page.screenshot(path=str(screens/'preview.png'),full_page=True)
     page.locator('#workspaceMode').select_option('real');page.wait_for_function("() => document.querySelector('#content').textContent.includes('Real finance records')");assert 'Unknown' in page.locator('#content').inner_text()
-    page.set_viewport_size({'width':390,'height':844});page.screenshot(path=str(root/'docs/preview-mobile.png'),full_page=True)
+    page.set_viewport_size({'width':390,'height':844});page.screenshot(path=str(screens/'preview-mobile.png'),full_page=True)
     assert page.evaluate('document.documentElement.scrollWidth<=window.innerWidth'), 'Page overflows mobile viewport'
     assert not errors,errors
     browser.close()
