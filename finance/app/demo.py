@@ -1,0 +1,52 @@
+from .db import dump
+
+def seed(c):
+ if c.execute("SELECT 1 FROM records WHERE workspace='demo'").fetchone():return
+ def master(kind,key,name,**props):c.execute('INSERT OR IGNORE INTO masters(workspace,kind,key,name,properties) VALUES(?,?,?,?,?)',('demo',kind,key,name,dump(props)))
+ master('entity','demo-entity','Navin demonstration entity',synthetic=True)
+ for key,name in [('clinical','Clinical'),('pharmacy','Main Pharmacy'),('ct','CT Scan'),('admin','Administration')]:master('department',key,name)
+ for key,name in [('ayushman','Ayushman'),('cghs','CGHS'),('echs','ECHS'),('esic','ESIC'),('selfpay','Self-pay')]:master('panel',key,name)
+ master('vendor','med-supply','Demonstration medical supplier',approved=True,clinical_criticality=True)
+ master('bank_account','bank-1','Demonstration operating bank',entity_id='demo-entity',branch_id='dadri')
+ for key,name,category in [('cash','Cash & bank','cash'),('ar','Patient receivables','asset'),('inventory','Medicine inventory','asset'),('equipment','Medical equipment','asset'),('ap','Vendor payable','liability'),('loan','Term loan','liability'),('equity','Opening capital','equity'),('revenue','Hospital revenue','revenue'),('consumption','Consumables used','direct_cost'),('payroll','Payroll','operating_expense'),('expense','Operating expense','operating_expense'),('depreciation','Depreciation','depreciation'),('interest','Interest','finance_cost')]:master('account',key,name,statement_category=category)
+ for key,value in [('accounting_complete',True),('opening_complete',True),('credit_revenue_complete',True)]:c.execute("UPDATE settings SET value=? WHERE workspace='demo' AND key=?",(dump(value),key))
+ def record(kind,doc_id,date='2026-10-01',branch='dadri',**f):
+  fields=dict(doc_id=doc_id,date=date,entity_id='demo-entity',branch_id=branch,**f)
+  cur=c.execute('INSERT INTO records(workspace,kind,entity_id,branch_id,date,doc_id,fields,original,sheet,row_no) VALUES(?,?,?,?,?,?,?,?,?,?)',('demo',kind,'demo-entity',branch,date,doc_id,dump(fields),dump({'synthetic':True,'values':fields}),'Synthetic fixture',1));return cur.lastrowid
+ for key,amount in [('cash','100000'),('equipment','2000000'),('inventory','50000'),('equity','-2150000')]:record('opening_balance','OPEN-'+key,account_id=key,amount=amount)
+ def voucher(id,debit_account,credit_account,amount,date='2026-10-01',branch='dadri'):
+  record('journal',id+'-D',date,branch,voucher_id=id,account_id=debit_account,debit=amount,credit='0')
+  record('journal',id+'-C',date,branch,voucher_id=id,account_id=credit_account,debit='0',credit=amount)
+ voucher('REV-1','ar','revenue','120000');voucher('REV-2','ar','revenue','20000');voucher('REV-3','ar','revenue','80000',branch='vaishali')
+ voucher('CREDIT-1','revenue','ar','5000');voucher('COLL-1','cash','ar','60000','2026-10-02');voucher('EXP-1','expense','ap','30000');voucher('PUR-1','inventory','ap','20000');voucher('COGS-1','consumption','inventory','10000');voucher('SALARY-1','payroll','ap','15000');voucher('PAY-1','ap','cash','10000','2026-10-03');voucher('LOAN-1','cash','loan','500000');voucher('DEP-1','depreciation','equipment','3000');voucher('INT-1','interest','ap','2000')
+ b1=record('billing','B1',bill_id='B1',uhid='000101',admission_id='D-001',patient='Synthetic patient A',amount='120000',gross='125000',discount='5000',panel_id='ayushman',department_id='clinical',due_date='2026-10-18',credit_revenue='yes',admission_date='2026-09-28',discharge_date='2026-10-01')
+ b2=record('billing','B2',bill_id='B2',uhid='000102',admission_id='D-002',patient='Synthetic patient B',amount='20000',panel_id='selfpay',department_id='clinical',credit_revenue='no',discharge_date='2026-10-01')
+ record('billing','B3',branch='vaishali',bill_id='B3',uhid='000101',admission_id='V-001',patient='Synthetic patient C',amount='80000',panel_id='cghs',department_id='clinical',credit_revenue='yes',discharge_date='2026-10-01')
+ for event,date,extra in [('ready','2026-10-01',{}),('submitted','2026-10-02',{}),('approved','2026-10-04',{'approved_amount':'110000','deduction':'10000','reason':'Synthetic review deduction','expected_date':'2026-10-15','owner':'Demo collections team','next_action':'Confirm settlement advice'})]:record('claim','CL1-'+event,date,claim_id='CL1',bill_id='B1',event=event,panel_id='ayushman',**extra)
+ record('ar_adjustment','CN1',bill_id='B1',adjustment_type='credit',amount='5000',already_in_bill='no',authorisation='Synthetic approved credit')
+ receipt=record('receipt','RC1','2026-10-02',receipt_id='RC1',amount='60000',bank_account_id='bank-1',receipt_type='collection',reference='DEMO-RC1')
+ invoice=record('invoice','I1',invoice_id='I1',vendor_id='med-supply',amount='30000',due_date='2026-10-05',critical='yes',category_id='expense',status='approved')
+ purchase=record('invoice','I2',invoice_id='I2',vendor_id='med-supply',amount='20000',due_date='2026-10-20',po_id='PO1',grn_id='GR1',item_id='MED1',quantity='10',rate='2000')
+ record('purchase_order','PO1',po_id='PO1',vendor_id='med-supply',amount='20000',item_id='MED1',quantity='10',rate='2000')
+ record('goods_receipt','GR1',po_id='PO1',grn_id='GR1',vendor_id='med-supply',item_id='MED1',quantity='10',rate='2000')
+ payment=record('payment','PY1','2026-10-03',payment_id='PY1',amount='10000',vendor_id='med-supply',bank_account_id='bank-1',payment_type='settlement',reference='DEMO-PY1')
+ for cash,target,kind,amount in [(receipt,b1,'ar','40000'),(receipt,b2,'ar','20000'),(payment,invoice,'ap','10000')]:c.execute('INSERT INTO allocations(workspace,kind,cash_id,document_id,amount,maker) VALUES(?,?,?,?,?,?)',('demo',kind,cash,target,amount,0))
+ record('bank','BANK-OPEN',bank_account_id='bank-1',entry_type='opening',amount='100000')
+ record('cashbook','BOOK-OPEN',bank_account_id='bank-1',entry_type='opening',amount='100000')
+ for doc,amount,date,ref in [('COLL','60000','2026-10-02','DEMO-RC1'),('PAY','-10000','2026-10-03','DEMO-PY1'),('LOAN','500000','2026-10-01','DEMO-LOAN')]:
+  record('bank','BANK-'+doc,date,bank_account_id='bank-1',entry_type='movement',amount=amount,reference=ref,movement_type='loan' if doc=='LOAN' else 'collection' if doc=='COLL' else 'payment')
+  record('cashbook','BOOK-'+doc,date,bank_account_id='bank-1',entry_type='movement',amount=amount,reference=ref,movement_type='loan' if doc=='LOAN' else 'collection' if doc=='COLL' else 'payment')
+ record('bank','BANK-CLOSE','2026-10-06',bank_account_id='bank-1',entry_type='closing',amount='650000')
+ for doc,movement,qty,cost in [('STOCK-OPEN','opening','20','50000'),('STOCK-BUY','receipt','10','20000'),('STOCK-USE','issue','-4','-10000')]:record('inventory',doc,item_id='MED1',batch_id='BATCH-A',store_id='main',movement_type=movement,quantity=qty,actual_cost=cost,expiry_date='2026-12-31',valuation_method='recorded_cost')
+ record('inventory','STOCK-COUNT','2026-10-05',item_id='MED1',batch_id='BATCH-A',store_id='main',movement_type='count',quantity='25')
+ record('pharmacy','PH1',bill_id='B1',item_id='MED1',amount='10000',actual_cost='6000',quantity='2',description='Synthetic medicine',pharmacy_source='Main',department_id='pharmacy')
+ record('service','SV1',bill_id='B1',admission_id='D-001',description='Synthetic CT scan',amount='3000',actual_cost=None,quantity='1',department_id='ct',performed='yes',expected_bill='yes')
+ record('service','SV2',description='Synthetic unbilled test',amount='1000',quantity='1',department_id='clinical',performed='yes',expected_bill='yes')
+ record('payroll','SAL1',employee_id='EMP1',amount='15000',category_id='payroll',due_date='2026-10-10',evidence='Synthetic payroll register',department_id='admin')
+ record('asset','AS1',asset_id='EQ1',amount='2000000',accumulated_depreciation='3000',commission_date='2026-09-01',useful_life_months='120',residual_value='0',depreciation_policy='recorded',approved_budget='2100000')
+ record('loan','LN-OPEN',loan_id='TERM1',event='opening',amount='0');record('loan','LN-DRAW',loan_id='TERM1',event='drawdown',amount='500000');record('loan','LN-SCH',loan_id='TERM1',event='scheduled_principal',amount='20000',due_date='2026-10-18')
+ record('statutory','ST1',liability_id='TDS-DEMO',event='liability',amount='5000',due_date='2026-10-12',category_id='TDS',tax_treatment='User supplied demonstration treatment')
+ record('budget','BUD1',category_id='revenue',budget_type='revenue',amount='240000',month='2026-10',approved='yes',owner='Demo finance team')
+ record('commitment','CM1',amount='20000',due_date='2026-10-20',invoice_id='I2',approved='yes',direction='outflow')
+ for title in ['Billing and accounting revenue reconciliation','Receivables and claims review','Vendor reconciliation','Bank and cash reconciliation','Inventory close','Payroll and consultant accruals','Fixed assets and depreciation','Debt and interest','Statutory balances','Interbranch balances','Financial statement review']:
+  c.execute('INSERT INTO close_tasks(workspace,branch_id,period,title,owner,due_date) VALUES(?,?,?,?,?,?)',('demo','dadri','2026-10',title,'Demo finance team','2026-11-07'))
