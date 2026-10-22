@@ -22,7 +22,7 @@ Daily Work is the default landing page for department users. Each task has an en
 3. Provide the supporting reference and submit. The entry appears in **My recent submissions** while pending.
 4. Another management/finance user checks the evidence in **Imports & Settings → Approvals**. Only approval adds the row to financial analysis.
 
-A department user can request the name types needed for their job. The inline **New vendor/panel/employee** action keeps the entry draft when returning. Finance approves the name before it appears in dropdowns after refresh. Name requests cannot change bank details or mark a vendor approved. Finance manages reviewed vendor properties separately. Drafts are in browser memory, not saved across reloads.
+A department user can request the name types needed for their job. The inline **New vendor/panel/employee** action keeps the entry draft when returning. Finance approves the name before it appears in dropdowns. Use **Refresh approved names** in the pending draft to reload the list without losing entered values. Name requests cannot change bank details or mark a vendor approved. Finance manages reviewed vendor properties separately. Drafts are in browser memory, not saved across reloads.
 
 ## Bulk uploads
 
