@@ -111,15 +111,20 @@ def upload(c,rows):
 def review_import(c,id):
  m={'reviewed':True,'profile_name':'Validated fixture','sheets':{'CSV':{'header_row':1,'columns':{k:str(i) for i,k in enumerate(['doc_id','date','bill_id','uhid','admission_id','amount'])}}}}
  r=c.post(f'/api/imports/{id}/review',json=m);assert r.status_code==200,r.text;return r.json()
+def approve_import(c,id,options=None):
+ r=c.post(f'/api/imports/{id}/commit',json=options or {});assert r.status_code==200,r.text
+ with db.connect() as conn:
+  if not conn.execute("SELECT 1 FROM users WHERE username='finance2'").fetchone():conn.execute('INSERT INTO users(username,password,role,branches) VALUES(?,?,?,?)',('finance2',db.password_hash('test-only-reviewer-password'),'finance','["*"]'))
+ login(c,'finance2','test-only-reviewer-password');review(c,r.json()['id']);login(c,'admin','test-only-admin-password')
 def test_duplicate_overlap_reprocess_and_rollback(client,real_entity):
- rows=[['LINE1','2026-10-01','B1','0001','001','100']];a=upload(client,rows);review_import(client,a['id']);assert client.post(f"/api/imports/{a['id']}/commit",json={}).status_code==200
+ rows=[['LINE1','2026-10-01','B1','0001','001','100']];a=upload(client,rows);review_import(client,a['id']);approve_import(client,a['id'])
  assert upload(client,rows)['duplicate'];assert len(data(client,'real')['records'])==1
  b=upload(client,[['LINE2','2026-10-01','B2','0001','002','120']]);assert review_import(client,b['id'])['overlaps']
  assert client.post(f"/api/imports/{b['id']}/commit",json={}).status_code==409
- assert client.post(f"/api/imports/{b['id']}/commit",json={'replace_ids':[a['id']],'notes':'Corrected source'}).status_code==200
+ approve_import(client,b['id'],{'replace_ids':[a['id']],'notes':'Corrected source'})
  assert data(client,'real')['kpis']['operational_billing']=='120.00'
  revision=client.post(f"/api/imports/{b['id']}/reprocess").json()['id'];review_import(client,revision)
- assert client.post(f'/api/imports/{revision}/commit',json={'replace_ids':[b['id']],'notes':'Reprocessed mapping'}).status_code==200
+ approve_import(client,revision,{'replace_ids':[b['id']],'notes':'Reprocessed mapping'})
  assert client.post(f'/api/imports/{revision}/rollback',json={'notes':'Rollback verified'}).status_code==200
  assert data(client,'real')['kpis']['operational_billing'] is None
  with db.connect() as c:assert c.execute("SELECT COUNT(*) FROM records WHERE workspace='real'").fetchone()[0]==3
@@ -204,3 +209,67 @@ def test_shared_allocation_preserves_total_and_filter_basis(client):
  reviewer(client);review(client,p.json()['id'])
  rows=data(client)['shared_allocations'][0]['allocations'];assert sum(Decimal(r['amount']) for r in rows)==Decimal('1000.01')
  filtered=data(client,branch_id='dadri')['shared_allocations'][0]['allocations'];assert filtered==[r for r in rows if r['branch_id']=='dadri']
+
+
+def test_department_roles_enforce_write_and_read_scope(client):
+ from app import schema
+ for role,allowed,denied in [('stores','invoice','payment'),('procurement','purchase_order','payment'),('pharmacy','pharmacy','payroll'),('hr','payroll','billing'),('billing','billing','receipt'),('cashier','receipt','journal'),('accounts','journal',None),('reviewer',None,'billing')]:
+  r=client.post('/api/users',json={'username':role,'password':'department-test-password','role':role,'branches':['dadri']});assert r.status_code==200,r.text
+ for role,allowed,denied in [('stores','invoice','payment'),('procurement','purchase_order','payment'),('pharmacy','pharmacy','payroll'),('hr','payroll','billing'),('billing','billing','receipt'),('cashier','receipt','journal'),('accounts','journal',None),('reviewer',None,'billing')]:
+  assert login(client,role,'department-test-password').status_code==200
+  me=client.get('/api/me').json()
+  if allowed:assert me['source_types'][allowed]['writable']
+  if denied:
+   assert not me['source_types'].get(denied,{}).get('writable',False)
+   assert client.post('/api/records?workspace=demo',json={'kind':denied,'fields':{}}).status_code==403
+   assert client.post('/api/imports/upload',data={'entity_id':'demo-entity','branch_id':'dadri','kind':denied},files={'file':('test.csv',b'doc_id,date,amount\n1,2026-10-01,1','text/csv')}).status_code==403
+  d=data(client)
+  assert all(schema.readable(role,r['kind']) and r['branch_id']=='dadri' for r in d['asof_records'])
+  assert client.get('/api/analytics?workspace=demo&branch_id=vaishali').status_code==403
+  if role=='hr':
+   assert {r['kind'] for r in d['asof_records']}=={'payroll'}
+   assert all(r['kind'] not in ('vendor','panel','consultant') for r in client.get('/api/masters?workspace=demo').json())
+  login(client,'admin','test-only-admin-password')
+
+
+def test_staff_name_requests_are_pending_scoped_and_sanitized(client):
+ client.post('/api/users',json={'username':'stores','password':'department-test-password','role':'stores','branches':['dadri']})
+ login(client,'stores','department-test-password')
+ payload={'kind':'vendor','name':'New test supplier','branch_id':'dadri','notes':'Verified supplier invoice','properties':{'approved':True,'bank_details':'injected'}}
+ r=client.post('/api/master-requests?workspace=demo',json=payload);assert r.status_code==200,r.text
+ pid=r.json()['id']
+ assert not any(x['name']==payload['name'] for x in client.get('/api/masters?workspace=demo').json())
+ assert client.post('/api/master-requests?workspace=demo',json={**payload,'branch_id':'vaishali'}).status_code==403
+ assert client.post('/api/master-requests?workspace=demo',json={**payload,'kind':'employee'}).status_code==403
+ assert client.post(f'/api/proposals/{pid}/review',json={'decision':'approved','notes':'Attempt'}).status_code==403
+ login(client,'admin','test-only-admin-password');review(client,pid)
+ new=next(x for x in client.get('/api/masters?workspace=demo').json() if x['name']==payload['name'])
+ assert new['properties']=={'approved':False,'branch_id':'dadri'}
+ login(client,'stores','department-test-password')
+ assert client.post('/api/master-requests?workspace=demo',json=payload).status_code==409
+
+
+def test_import_independent_review_freeze_rejection_and_idempotency(client,real_entity):
+ a=upload(client,[['LINE1','2026-10-01','B1','0001','001','100']]);review_import(client,a['id'])
+ queued=client.post(f"/api/imports/{a['id']}/commit",json={}).json();pid=queued['id']
+ assert queued['status']=='pending_approval' and data(client,'real')['records']==[]
+ assert client.post(f"/api/imports/{a['id']}/commit",json={}).json()['id']==pid
+ assert client.post(f'/api/proposals/{pid}/review',json={'decision':'approved','notes':'Self review'}).status_code==403
+ assert client.post(f"/api/imports/{a['id']}/review",json={}).status_code==409
+ assert client.post(f"/api/imports/{a['id']}/rollback",json={'notes':'Frozen'}).status_code==409
+ reviewer(client)
+ r=client.post(f'/api/proposals/{pid}/review',json={'decision':'rejected','notes':'Please check mapping'});assert r.status_code==200,r.text
+ assert client.get(f"/api/imports/{a['id']}").json()['state']=='reviewed'
+ login(client,'admin','test-only-admin-password');review_import(client,a['id']);approve_import(client,a['id'])
+ assert len(data(client,'real')['records'])==1
+ assert client.post(f"/api/imports/{a['id']}/commit",json={}).json()['duplicate']
+ assert len(data(client,'real')['records'])==1
+
+
+def test_mapping_reviewer_cannot_approve_import(client,real_entity):
+ a=upload(client,[['LINE1','2026-10-01','B1','0001','001','100']])
+ reviewer(client);review_import(client,a['id'])
+ login(client,'admin','test-only-admin-password');pid=client.post(f"/api/imports/{a['id']}/commit",json={}).json()['id']
+ login(client,'finance2','test-only-reviewer-password')
+ assert client.post(f'/api/proposals/{pid}/review',json={'decision':'approved','notes':'Reviewed my mapping'}).status_code==403
+ assert data(client,'real')['records']==[]

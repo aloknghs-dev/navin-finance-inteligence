@@ -1,6 +1,6 @@
 """Reviewed canonical register contracts; source-specific mappings are never assumed."""
 BRANCHES={'dadri':'Dadri','vaishali':'Vaishali','sikandrabad':'Sikandrabad','meerut':'Meerut Road, Ghaziabad'}
-ROLES=['management','finance','collections','procurement','reviewer']
+ROLES=['management','finance','accounts','billing','collections','cashier','procurement','stores','pharmacy','hr','reviewer']
 MASTER_TYPES=['entity','branch','department','cost_centre','panel','vendor','bank_account','category','account','employee','consultant']
 ACCOUNT_CATEGORIES=['revenue','direct_cost','operating_expense','depreciation','finance_cost','tax','asset','cash','liability','equity']
 COMMON={'doc_id':'Stable document / line ID','entity_id':'Legal entity key','branch_id':'Branch key','date':'Posting / document date','amount':'Signed amount ₹','department_id':'Department key','cost_centre_id':'Cost centre key','panel_id':'Panel key','vendor_id':'Vendor key','status':'Status','notes':'Notes / source interpretation'}
@@ -41,4 +41,50 @@ DATE_FIELDS={'date','admission_date','discharge_date','due_date','expected_date'
 READ_SECTIONS={'management':None,'finance':None,'collections':{'Revenue','Receivables'},'procurement':{'Payables','Inventory'},'reviewer':{'Accounting','Revenue','Receivables','Payables','Treasury','Inventory','Assets','Budget','Statutory'}}
 
 def fields(kind): return dict(COMMON,**TYPES[kind][3])
-def readable(role,kind): return READ_SECTIONS[role] is None or TYPES[kind][1] in READ_SECTIONS[role]
+READ_KINDS={
+ 'accounts':set(TYPES),
+ 'billing':{'billing','service','encounter','claim','receipt','ar_adjustment'},
+ 'cashier':{'billing','invoice','receipt','payment','bank','cashbook'},
+ 'procurement':{'purchase_order','goods_receipt','invoice','ap_adjustment','inventory'},
+ 'stores':{'purchase_order','goods_receipt','invoice','inventory'},
+ 'pharmacy':{'pharmacy','inventory'},
+ 'hr':{'payroll'},
+}
+WRITE_KINDS={
+ 'management':set(TYPES),'finance':set(TYPES),'accounts':set(TYPES),
+ 'billing':{'billing','service','encounter','claim'},
+ 'collections':{'billing','service','encounter','claim','ar_adjustment'},
+ 'cashier':{'receipt','payment','cashbook'},
+ 'procurement':{'purchase_order','goods_receipt','invoice','inventory'},
+ 'stores':{'purchase_order','goods_receipt','invoice','inventory'},
+ 'pharmacy':{'pharmacy','inventory'},'hr':{'payroll'},'reviewer':set(),
+}
+MASTER_REQUESTS={
+ 'management':{'vendor','panel','employee','consultant'},'finance':{'vendor','panel','employee','consultant'},
+ 'accounts':{'vendor','panel','employee','consultant'},'billing':{'panel'},'collections':{'panel'},
+ 'cashier':{'vendor','panel'},'procurement':{'vendor'},'stores':{'vendor'},'pharmacy':{'vendor'},'hr':{'employee'},'reviewer':set(),
+}
+DESKS=[
+ {'key':'billing','name':'Billing & claims','owner':'Billing / TPA team','rhythm':'Update daily and whenever claim status changes','kinds':['billing','claim','service','encounter'],'help':'Final bills, UHID/IPD, panel claims, queries and discharge activity.'},
+ {'key':'cashier','name':'Receipts & payments','owner':'Cashier / unit accounts','rhythm':'Record each receipt or payment','kinds':['receipt','payment','cashbook'],'help':'Actual cash received or paid, transaction references and cashbook movements.'},
+ {'key':'stores','name':'Purchases & stores','owner':'Purchase / store in-charge','rhythm':'On ordering, receipt, invoice and stock movement','kinds':['purchase_order','goods_receipt','invoice','inventory'],'help':'Purchase orders, goods received, vendor bills and stock records. Accounts records settlement.'},
+ {'key':'pharmacy','name':'Pharmacy','owner':'Pharmacy in-charge','rhythm':'Import daily sales and stock movements','kinds':['pharmacy','inventory'],'help':'Main/Secondary pharmacy sales, returns, batches, recorded costs and stock.'},
+ {'key':'hr','name':'HR & payroll','owner':'HR prepares; finance approves','rhythm':'Monthly payroll and approved reimbursements','kinds':['payroll'],'help':'Approved salary, benefits and reimbursement records. Payroll stays restricted.'},
+ {'key':'accounts','name':'Accounts & reconciliation','owner':'Unit accountant','rhythm':'Daily reconciliation; monthly accounting close','kinds':['journal','trial_balance','opening_balance','bank','expense','consultant','ar_adjustment','ap_adjustment'],'help':'Books, bank evidence, expenses, doctor payouts and reviewed opening balances.'},
+ {'key':'planning','name':'Planning & capital','owner':'Strategy / finance head','rhythm':'Approved budgets and changes to assumptions','kinds':['budget','forecast_assumption','finance_scenario','commitment','asset','loan','statutory','related_party'],'help':'Budgets, forecasts, assets, debt, statutory records and approved commitments.'},
+]
+
+def readable(role,kind):
+ if role in READ_KINDS:return kind in READ_KINDS[role]
+ return role in READ_SECTIONS and (READ_SECTIONS[role] is None or TYPES[kind][1] in READ_SECTIONS[role])
+def writable(role,kind):return kind in WRITE_KINDS.get(role,set())
+def can_allocate(role,kind):
+ return role in ('management','finance','accounts','cashier') or kind=='receipt' and role in ('billing','collections')
+def desks(role):
+ choices={'billing':{'billing'},'collections':{'billing','accounts'},'cashier':{'cashier'},'procurement':{'stores'},'stores':{'stores'},'pharmacy':{'pharmacy'},'hr':{'hr'}}.get(role)
+ return [dict(d,kinds=[k for k in d['kinds'] if writable(role,k)]) for d in DESKS if (choices is None or d['key'] in choices) and any(writable(role,k) for k in d['kinds'])]
+def master_visible(role,kind):
+ if role in ('management','finance','accounts','reviewer'):return True
+ common={'entity','branch','department','cost_centre','category'}
+ extra={'billing':{'panel','consultant'},'collections':{'panel'},'cashier':{'panel','vendor','bank_account'},'stores':{'vendor'},'procurement':{'vendor'},'pharmacy':{'vendor'},'hr':{'employee'}}
+ return kind in common|extra.get(role,set())

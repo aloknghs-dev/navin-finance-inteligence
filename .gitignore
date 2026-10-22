@@ -7,3 +7,4 @@
 *.sqlite3-*
 *.tar.gz
 *.tgz
+finance/preview/dist/

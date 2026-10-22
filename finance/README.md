@@ -1,6 +1,6 @@
 # Navin Finance Intelligence
 
-Working internal finance-control application for Dadri, Vaishali, Sikandrabad and Meerut Road, Ghaziabad. Entities, branches, accounts, departments, vendors, panels and rules are configurable. Thirteen workspaces cover executive review, revenue, collections, procurement, treasury, expenses, stock, assets/debt, statements, budgets, exceptions, close and data setup.
+Working internal finance-control application for Dadri, Vaishali, Sikandrabad and Meerut Road, Ghaziabad. Entities, branches, accounts, departments, vendors, panels and rules are configurable. A department-specific Daily Work workspace provides entry forms, file uploads and submission tracking. Thirteen analysis workspaces cover executive review, revenue, collections, procurement, treasury, expenses, stock, assets/debt, statements, budgets, exceptions, close and data setup.
 
 ## Run
 
@@ -21,7 +21,7 @@ The initial screen uses a clearly marked synthetic demonstration workspace. Swit
 
 1. Create a legal entity and assign each relevant branch to it in Masters. Finance master changes need a different finance user's approval.
 2. Create reviewed ledger account categories, banks, vendors, panels and other needed masters.
-3. Download a canonical CSV template, or upload an actual CSV/XLSX report. Review every worksheet, header row, column meaning, date, identifier and sign. Inspect accepted/rejected/excluded records and overlap warnings before committing. Original files and values remain retained.
+3. Download a canonical CSV template, or upload an actual CSV/XLSX report. Review every worksheet, header row, column meaning, date, identifier and sign. Inspect accepted/rejected/excluded records and overlap warnings, then submit for a different finance user to approve. The uploader and mapping reviewer cannot approve their own import. Original files and values remain retained.
 4. Import journals or compatible trial balance snapshots for accounting results; final bills and collection allocations for receivables; invoices and settlement allocations for payables; bank balances/movements for treasury. Add other registers when available.
 5. Review coverage before approving completeness settings. Enter materiality, payment terms, contract rates and scenario assumptions explicitly. Missing inputs never authorize invented values.
 
@@ -32,9 +32,10 @@ The original uploaded texts were software specifications, not hospital source re
 ```bash
 .venv/bin/python -m pytest -q
 node --check app/static/app.js
+node --check app/static/workflows.js
 ```
 
-The browser test uses `/usr/bin/chromium`, Playwright and a disposable database. It visits all thirteen modules, checks real/demo isolation and mobile layout. Financial tests cover allocations, approvals, bank matching, stock, debt, budgets, forecasts, imports, rollback, locks, permissions and backup restore. Screenshots in `docs/preview*.png` contain synthetic data only.
+The browser test uses `/usr/bin/chromium`, Playwright and a disposable database. It visits Daily Work and all thirteen analysis modules, checks real/demo isolation and mobile layout. Financial tests cover allocations, approvals, bank matching, stock, debt, budgets, forecasts, imports, rollback, locks, permissions and backup restore. Screenshots in `docs/preview*.png` contain synthetic data only.
 
 ## Data and recovery
 
@@ -49,8 +50,16 @@ The browser test uses `/usr/bin/chromium`, Playwright and a disposable database.
 
 Restore verifies SQLite integrity, rewrites original upload paths and removes sessions. Store backups privately and test recovery periodically. Schema version 1 is recorded in `migrations`; startup is idempotent. There is no automatic future schema migration or retention deletion policy.
 
-## Temporary preview
+## Department workflows and preview
 
-The existing user-authorized Tunnelmole helper outside this repository forwards the HTTPS preview to port 8000. This is a temporary workspace preview: it stops when its process/workspace stops, and its URL can change upon restart. It is not a permanently deployed Git-connected service.
+See [who enters what](docs/DEPARTMENT_WORKFLOW.md) for staff responsibilities, role restrictions and the approval flow.
+
+A standalone UI preview can be generated from an isolated synthetic database:
+
+```bash
+PYTHONPATH=. .venv/bin/python scripts/build_preview.py
+```
+
+Serve `preview/dist/` with a static web server. Its role selector demonstrates the real app screens with a fixed synthetic period. It cannot write records, approve requests, import files or connect to hospital data. Use `scripts/start.sh` to run the full Python application.
 
 See [delivery checklist](docs/DELIVERY_CHECKLIST.md) for the exact supported scope and remaining limits.
