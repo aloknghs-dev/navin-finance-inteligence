@@ -37,7 +37,9 @@ def branch(u,b):
 def finance(u):
  if u['role'] not in ('management','finance'):raise HTTPException(403,'Finance/management permission required')
 def write_kind(u,kind):
- if u['role']=='reviewer' or not schema.readable(u['role'],kind):raise HTTPException(403,'Role cannot change this register')
+ if not schema.writable(u['role'],kind):raise HTTPException(403,'Role cannot change this register')
+def accounting(u):
+ if u['role'] not in ('management','finance','accounts'):raise HTTPException(403,'Accounts/finance permission required')
 def workspace(request):
  w=request.query_params.get('workspace','real')
  if w not in ('real','demo'):raise HTTPException(400,'Invalid workspace')
@@ -80,15 +82,16 @@ def logout(request:Request,u=Depends(user)):
  r=Response('{}',media_type='application/json');r.delete_cookie('navin_finance_session');return r
 @app.get('/api/me')
 def me(u=Depends(user)):
- return dict(u,source_types={k:{'name':v[0],'section':v[1],'required':v[2].split(),'fields':schema.fields(k)} for k,v in schema.TYPES.items() if schema.readable(u['role'],k)},master_types=schema.MASTER_TYPES,account_categories=schema.ACCOUNT_CATEGORIES,roles=schema.ROLES)
+ return dict(u,source_types={k:{'name':v[0],'section':v[1],'required':v[2].split(),'fields':schema.fields(k),'writable':schema.writable(u['role'],k)} for k,v in schema.TYPES.items() if schema.readable(u['role'],k)},desks=schema.desks(u['role']),allocations=[side for side,kind in [('ar','receipt'),('ap','payment')] if schema.can_allocate(u['role'],kind)],number_fields=sorted(schema.NUMBERS),date_fields=sorted(schema.DATE_FIELDS),master_requests=sorted(schema.MASTER_REQUESTS.get(u['role'],set())),master_types=schema.MASTER_TYPES,account_categories=schema.ACCOUNT_CATEGORIES,roles=schema.ROLES)
 @app.get('/api/masters')
 def masters(request:Request,u=Depends(user)):
  w=workspace(request)
  with db.connect() as c:
   rows=engine.masters(c,w)
+  rows=[r for r in rows if schema.master_visible(u['role'],r['kind'])]
   rows=[r for r in rows if r['kind']!='branch' or '*' in u['branches'] or r['key'] in u['branches']]
   rows=[r for r in rows if '*' in u['branches'] or not r['properties'].get('branch_id') or r['properties']['branch_id'] in u['branches']]
-  if u['role'] not in ('management','finance','procurement'):
+  if u['role'] not in ('management','finance','accounts'):
    for r in rows:r['properties']={k:v for k,v in r['properties'].items() if k not in ('bank_details','account_number','ifsc')}
   return rows
 @app.post('/api/masters')
@@ -98,6 +101,20 @@ async def master_change(request:Request,u=Depends(user)):
  branch_id=b.get('branch_id') or (b['key'] if b['kind']=='branch' else '*')
  if branch_id=='*' and '*' not in u['branches']:raise HTTPException(403,'Group master editing requires group branch access')
  with db.connect() as c:return propose(c,u,w,branch_id,'master',b)
+@app.post('/api/master-requests')
+async def request_master(request:Request,u=Depends(user)):
+ w=workspace(request);b=await request.json();kind=b.get('kind');name=str(b.get('name','')).strip();br=b.get('branch_id')
+ if kind not in schema.MASTER_REQUESTS.get(u['role'],set()):raise HTTPException(403,'Role cannot request this master')
+ if not name or len(name)>160 or not b.get('notes'):raise HTTPException(400,'Name and supporting evidence are required')
+ branch(u,br)
+ with db.connect() as c:
+  if not c.execute("SELECT 1 FROM masters WHERE workspace=? AND kind='branch' AND key=? AND active=1",(w,br)).fetchone():raise HTTPException(400,'Choose an authorised branch')
+  existing=c.execute('SELECT key,name,properties FROM masters WHERE workspace=? AND kind=? AND active=1 AND lower(name)=lower(?)',(w,kind,name)).fetchall()
+  if any(not json.loads(r['properties']).get('branch_id') or json.loads(r['properties'])['branch_id']==br for r in existing):raise HTTPException(409,'This name already exists; select it from the list')
+  props={'branch_id':br}
+  if kind=='vendor':props['approved']=False
+  payload={'kind':kind,'key':kind+'-'+secrets.token_hex(6),'name':name,'properties':props,'notes':b['notes']}
+  return propose(c,u,w,br,'master',payload)
 @app.get('/api/analytics')
 def analytics(request:Request,u=Depends(user)):
  f=dict(request.query_params);w=f.pop('workspace','real');validate_filters(w,f,u)
@@ -133,7 +150,8 @@ async def allocation(request:Request,u=Depends(user)):
  w=workspace(request);b=await request.json()
  with db.connect() as c:
   cash=record(c,u,int(b['cash_id']),w);target=record(c,u,int(b['document_id']),w)
-  write_kind(u,cash['kind']);validate_allocation(c,w,cash,target,b['amount']);return propose(c,u,w,cash['branch_id'],'allocation',b)
+  if not schema.can_allocate(u['role'],cash['kind']):raise HTTPException(403,'Role cannot allocate these settlements')
+  validate_allocation(c,w,cash,target,b['amount']);return propose(c,u,w,cash['branch_id'],'allocation',b)
 def validate_allocation(c,w,cash,target,amount):
  if cash['branch_id']!=target['branch_id'] or cash['entity_id']!=target['entity_id']:raise HTTPException(400,'Allocation must use the same branch and entity')
  allowed=(cash['kind']=='receipt' and target['kind']=='billing') or (cash['kind']=='payment' and target['kind'] in ('invoice','expense','payroll','consultant'))
@@ -149,7 +167,7 @@ def validate_allocation(c,w,cash,target,amount):
  if value<0 and cash['kind']=='receipt' and (not cash['fields'].get('original_receipt_id') or not cash['fields'].get('authorisation')):raise HTTPException(400,'Refund requires original receipt and authorisation')
 @app.post('/api/bank-matches')
 async def bank_match(request:Request,u=Depends(user)):
- finance(u);w=workspace(request);b=await request.json()
+ accounting(u);w=workspace(request);b=await request.json()
  with db.connect() as c:
   bankr=record(c,u,int(b['bank_id']),w);bookr=record(c,u,int(b['book_id']),w);validate_bank(c,w,bankr,bookr,b['amount']);return propose(c,u,w,bankr['branch_id'],'bank_match',b)
 def validate_bank(c,w,bankr,bookr,amount):
@@ -180,7 +198,12 @@ async def approve(id:int,request:Request,u=Depends(user)):
   if b.get('decision') not in ('approved','rejected'):raise HTTPException(400,'Choose approved or rejected')
   p=json.loads(r['payload']);w=r['workspace'];action=r['action']
   if b['decision']=='approved':
-   if action=='record':
+   if action=='import_commit':
+    imp=import_row(c,u,p['import_id']);reviewed=json.loads(imp['review'])
+    if u['id'] in (imp['user_id'],reviewed.get('reviewed_by')):raise HTTPException(403,'Uploader or mapping reviewer cannot approve this import')
+    if imp['state']!='pending_approval' or import_fingerprint(imp)!=p['fingerprint']:raise HTTPException(409,'Import changed; review and submit it again')
+    commit_import(c,u,imp,p['options'])
+   elif action=='record':
     v=p['fields'];ensure_open(c,w,v['branch_id'],v['date']);ensure_master(c,w,v['entity_id'],v['branch_id'])
     c.execute('INSERT INTO records(workspace,kind,entity_id,branch_id,date,doc_id,fields,original,sheet) VALUES(?,?,?,?,?,?,?,?,?)',(w,p['kind'],v['entity_id'],v['branch_id'],v['date'],v['doc_id'],db.dump(v),db.dump({'manual_proposal':id,'values':v}),'Reviewed manual entry'))
    elif action=='allocation':
@@ -222,6 +245,7 @@ async def approve(id:int,request:Request,u=Depends(user)):
     for key in (('cash_id','document_id') if table=='allocations' else ('bank_id','book_id')):
      old=record(c,u,linked[key],w);ensure_open(c,w,old['branch_id'],old['date'])
     c.execute('UPDATE '+table+' SET active=0 WHERE id=? AND workspace=?',(p['id'],w))
+  if action=='import_commit' and b['decision']=='rejected':c.execute("UPDATE imports SET state='reviewed' WHERE id=? AND state='pending_approval'",(p['import_id'],))
   c.execute('UPDATE proposals SET status=?,reviewer=?,review_note=? WHERE id=?',(b['decision'],u['id'],b['notes'],id));db.audit(c,u,'proposal_'+b['decision'],id,{'action':action,'payload':p,'note':b['notes']})
  return {'ok':True}
 @app.post('/api/change')
@@ -289,6 +313,7 @@ def validate_rule(c,w,p):
   if old.get('start','')<=end and old.get('end','')>=start and ((p['kind']=='consultant' and old.get('consultant_id')==f.get('consultant_id')) or (p['kind']=='tariff' and old.get('code')==f.get('code'))):raise HTTPException(409,'Overlapping effective-dated rules; retire the old rule first')
 @app.get('/api/rules')
 def rules(request:Request,u=Depends(user)):
+ finance(u)
  w=workspace(request)
  with db.connect() as c:return [dict(r,fields=json.loads(r['fields'])) for r in c.execute('SELECT * FROM rules WHERE workspace=? AND active=1',(w,)) if '*' in u['branches'] or r['branch_id'] in u['branches']]
 @app.post('/api/exceptions')
@@ -305,7 +330,7 @@ def close(request:Request,u=Depends(user)):
  with db.connect() as c:return {'tasks':[dict(r) for r in c.execute('SELECT * FROM close_tasks WHERE workspace=? ORDER BY period,title',(w,)) if '*' in u['branches'] or r['branch_id'] in u['branches']], 'locks':[dict(r) for r in c.execute('SELECT * FROM locks WHERE workspace=?',(w,)) if '*' in u['branches'] or r['branch_id'] in u['branches']]}
 @app.post('/api/close')
 async def close_task(request:Request,u=Depends(user)):
- finance(u);w=workspace(request);b=await request.json();branch(u,b.get('branch_id'))
+ accounting(u);w=workspace(request);b=await request.json();branch(u,b.get('branch_id'))
  if not b.get('title') or not b.get('period') or len(b['period'])!=7:raise HTTPException(400,'Period YYYY-MM and checklist title required')
  with db.connect() as c:
   ensure_open(c,w,b['branch_id'],b['period']+'-01')
@@ -422,9 +447,10 @@ async def import_review(id:int,request:Request,u=Depends(user)):
  b=await request.json()
  with db.connect() as c:
   imp=import_row(c,u,id);write_kind(u,imp['kind'])
-  if imp['state'] in ('committed','superseded'):raise HTTPException(409,'Stage a new mapping revision first')
+  if imp['state'] in ('committed','superseded','pending_approval'):raise HTTPException(409,'Import is committed or awaiting independent approval; a pending mapping is frozen')
   parsed=ingest.parse(imp['path'],imp['kind'],imp['entity_id'],imp['branch_id'],b)
   result={k:v for k,v in parsed.items() if k!='accepted'};result.update(inspection=json.loads(imp['review']).get('inspection'),accepted_count=len(parsed['accepted']),rejected_count=len(parsed['rejected']),excluded_count=len(parsed['excluded']),preview=parsed['accepted'][:10],overlaps=overlap(c,imp,parsed['period']),net_total=engine.money(sum((engine.D(r['fields'].get('amount')) or engine.Z for r in parsed['accepted']),engine.Z)),source_validation='User-reviewed mapping; no original hospital/accounting exports supplied with the specification.')
+  result['reviewed_by']=u['id']
   c.execute("UPDATE imports SET mapping=?,review=?,state='reviewed' WHERE id=?",(db.dump(b),db.dump(result),id))
   profile_name=b.get('profile_name')
   if profile_name:
@@ -434,30 +460,46 @@ async def import_review(id:int,request:Request,u=Depends(user)):
 @app.get('/api/profiles')
 def profiles(u=Depends(user)):
  with db.connect() as c:return [dict(r,mapping=json.loads(r['mapping'])) for r in c.execute('SELECT * FROM profiles ORDER BY id DESC') if schema.readable(u['role'],r['kind'])]
+def import_fingerprint(imp):
+ return hashlib.sha256(db.dump([imp['sha'],imp['mapping'],imp['review']]).encode()).hexdigest()
+def check_import(c,u,imp,b):
+ ensure_master(c,imp['workspace'],imp['entity_id'],imp['branch_id'])
+ parsed=ingest.parse(imp['path'],imp['kind'],imp['entity_id'],imp['branch_id'],json.loads(imp['mapping']))
+ if not parsed['accepted']:raise HTTPException(400,'No accepted records to import')
+ for r in parsed['accepted']:ensure_open(c,imp['workspace'],imp['branch_id'],r['fields']['date'])
+ overlaps=overlap(c,imp,parsed['period']);replace=b.get('replace_ids',[])
+ if overlaps and not replace and not b.get('retain_overlap'):raise HTTPException(409,'Explicit replacement or retention with an audit note is required for overlapping periods')
+ if (overlaps or parsed['rejected'] or replace) and not b.get('notes'):raise HTTPException(400,'Audit note required for overlap/rejected rows/replacement')
+ if any('conflict' in r['reason'].lower() for r in parsed['rejected']):raise HTTPException(409,'Entity/branch conflicts must be resolved before committing any rows')
+ for rid in replace:
+  old=import_row(c,u,int(rid))
+  if old['workspace']!=imp['workspace'] or old['branch_id']!=imp['branch_id'] or old['kind']!=imp['kind'] or old['state']!='committed':raise HTTPException(400,'Replace only a committed import of the same branch/source')
+  for oldr in c.execute('SELECT * FROM records WHERE import_id=? AND active=1',(rid,)):
+   ensure_open(c,imp['workspace'],imp['branch_id'],oldr['date'])
+   if c.execute('SELECT 1 FROM allocations WHERE active=1 AND (cash_id=? OR document_id=?)',(oldr['id'],oldr['id'])).fetchone() or c.execute('SELECT 1 FROM bank_matches WHERE active=1 AND (bank_id=? OR book_id=?)',(oldr['id'],oldr['id'])).fetchone():raise HTTPException(409,'Replacement would orphan reviewed allocations/matches. Reverse them with approval first.')
+ return parsed,replace
+def commit_import(c,u,imp,b):
+ parsed,replace=check_import(c,u,imp,b);id=imp['id']
+ for rid in replace:
+  c.execute('UPDATE records SET active=0 WHERE import_id=?',(rid,));c.execute("UPDATE imports SET state='superseded' WHERE id=?",(rid,))
+ for r in parsed['accepted']:
+  v=r['fields'];c.execute('INSERT INTO records(workspace,kind,entity_id,branch_id,date,doc_id,fields,original,import_id,sheet,row_no) VALUES(?,?,?,?,?,?,?,?,?,?,?)',(imp['workspace'],imp['kind'],v['entity_id'],v['branch_id'],v['date'],v['doc_id'],db.dump(v),db.dump(r['original']),id,r['sheet'],r['row']))
+ c.execute("UPDATE imports SET state='committed' WHERE id=?",(id,));db.audit(c,u,'import_committed',id,{'accepted':len(parsed['accepted']),'replacement_ids':replace,'retain_overlap':b.get('retain_overlap'),'notes':b.get('notes'),'uploader':imp['user_id']})
 @app.post('/api/imports/{id}/commit')
 async def import_commit(id:int,request:Request,u=Depends(user)):
  b=await request.json()
  with db.connect() as c:
   imp=import_row(c,u,id);write_kind(u,imp['kind'])
+  if imp['user_id']!=u['id']:raise HTTPException(403,'Only the uploader can submit this import for approval')
   if imp['state']=='committed':return {'ok':True,'duplicate':True}
-  if imp['state']!='reviewed':raise HTTPException(400,'Review mapping before committing')
-  parsed=ingest.parse(imp['path'],imp['kind'],imp['entity_id'],imp['branch_id'],json.loads(imp['mapping']))
-  for r in parsed['accepted']:ensure_open(c,imp['workspace'],imp['branch_id'],r['fields']['date'])
-  overlaps=overlap(c,imp,parsed['period']);replace=b.get('replace_ids',[])
-  if overlaps and not replace and not b.get('retain_overlap'):raise HTTPException(409,'Explicit replacement or retention with an audit note is required for overlapping periods')
-  if (overlaps or parsed['rejected'] or replace) and not b.get('notes'):raise HTTPException(400,'Audit note required for overlap/rejected rows/replacement')
-  if any('conflict' in r['reason'].lower() for r in parsed['rejected']):raise HTTPException(409,'Entity/branch conflicts must be resolved before committing any rows')
-  for rid in replace:
-   old=import_row(c,u,int(rid))
-   if old['workspace']!=imp['workspace'] or old['branch_id']!=imp['branch_id'] or old['kind']!=imp['kind'] or old['state']!='committed':raise HTTPException(400,'Replace only a committed import of the same branch/source')
-   for oldr in c.execute('SELECT * FROM records WHERE import_id=? AND active=1',(rid,)):
-    ensure_open(c,imp['workspace'],imp['branch_id'],oldr['date'])
-    if c.execute('SELECT 1 FROM allocations WHERE active=1 AND (cash_id=? OR document_id=?)',(oldr['id'],oldr['id'])).fetchone() or c.execute('SELECT 1 FROM bank_matches WHERE active=1 AND (bank_id=? OR book_id=?)',(oldr['id'],oldr['id'])).fetchone():raise HTTPException(409,'Replacement would orphan reviewed allocations/matches. Reverse them with approval first.')
-   c.execute('UPDATE records SET active=0 WHERE import_id=?',(rid,));c.execute("UPDATE imports SET state='superseded' WHERE id=?",(rid,))
-  for r in parsed['accepted']:
-   v=r['fields'];c.execute('INSERT INTO records(workspace,kind,entity_id,branch_id,date,doc_id,fields,original,import_id,sheet,row_no) VALUES(?,?,?,?,?,?,?,?,?,?,?)',(imp['workspace'],imp['kind'],v['entity_id'],v['branch_id'],v['date'],v['doc_id'],db.dump(v),db.dump(r['original']),id,r['sheet'],r['row']))
-  c.execute("UPDATE imports SET state='committed' WHERE id=?",(id,));db.audit(c,u,'import_committed',id,{'accepted':len(parsed['accepted']),'replacement_ids':replace,'retain_overlap':b.get('retain_overlap'),'notes':b.get('notes')})
- return {'ok':True,'accepted':len(parsed['accepted'])}
+  if imp['state']=='pending_approval':
+   pending=next((r for r in c.execute("SELECT id,payload FROM proposals WHERE action='import_commit' AND status='pending'") if json.loads(r['payload'])['import_id']==id),None)
+   return {'ok':True,'status':'pending_approval','id':pending['id'] if pending else None,'duplicate':True}
+  if imp['state']!='reviewed':raise HTTPException(400,'Review mapping before submitting for approval')
+  check_import(c,u,imp,b)
+  p=propose(c,u,imp['workspace'],imp['branch_id'],'import_commit',{'import_id':id,'filename':imp['filename'],'kind':imp['kind'],'accepted_count':json.loads(imp['review']).get('accepted_count'),'fingerprint':import_fingerprint(imp),'options':b})
+  c.execute("UPDATE imports SET state='pending_approval' WHERE id=?",(id,))
+  return dict(p,ok=True,status='pending_approval',import_id=id)
 @app.post('/api/imports/{id}/reprocess')
 def reprocess(id:int,u=Depends(user)):
  with db.connect() as c:
@@ -472,6 +514,7 @@ async def rollback(id:int,request:Request,u=Depends(user)):
  if not b.get('notes'):raise HTTPException(400,'Rollback reason required')
  with db.connect() as c:
   imp=import_row(c,u,id)
+  if imp['state']=='pending_approval':raise HTTPException(409,'Reject the pending import proposal before rolling it back')
   for r in c.execute('SELECT * FROM records WHERE import_id=? AND active=1',(id,)):
    ensure_open(c,imp['workspace'],imp['branch_id'],r['date'])
    if c.execute('SELECT 1 FROM allocations WHERE active=1 AND (cash_id=? OR document_id=?)',(r['id'],r['id'])).fetchone() or c.execute('SELECT 1 FROM bank_matches WHERE active=1 AND (bank_id=? OR book_id=?)',(r['id'],r['id'])).fetchone():raise HTTPException(409,'Reverse linked allocations/matches with approval before rollback')

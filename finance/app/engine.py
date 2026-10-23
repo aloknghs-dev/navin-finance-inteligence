@@ -33,7 +33,7 @@ def calculate(c,w,u,f=None):
   threshold=D(s.get('materiality'));ex=D(exposure)
   exceptions.append({'key':key,'category':category,'issue_kind':kind,'branch_id':branch,'message':message,'record_ids':ids or [],'exposure':money(ex),'expected':expected,'observed':observed,'severity':'material' if threshold is not None and ex is not None and abs(ex)>=threshold else 'review','status':'open','source_basis':'Linked source record IDs; exposure may overlap other issues'})
  for kind in ('journal','billing','invoice','bank','inventory'):
-  if not of(kind,True):issue('missing:'+kind,'Incomplete data','missing_data',f.get('branch_id'),'No '+TYPES[kind][0]+' records are available. Related metrics remain unknown.')
+  if readable(u['role'],kind) and not of(kind,True):issue('missing:'+kind,'Incomplete data','missing_data',f.get('branch_id'),'No '+TYPES[kind][0]+' records are available. Related metrics remain unknown.')
  # Detect duplicate business identities, without silently deleting legitimate lines.
  duplicate_groups=defaultdict(list)
  for r in balance_rows:
@@ -384,6 +384,7 @@ def calculate(c,w,u,f=None):
   if e['key'] in stored:e.update({k:stored[e['key']][k] for k in ('status','owner','due_date','resolution')})
  data_setup=[]
  for kind,contract in TYPES.items():
+  if not readable(u['role'],kind):continue
   rs=[r for r in allrows if r['kind']==kind and scope(r)];dates=[r['date'] for r in rs]
   data_setup.append({'kind':kind,'name':contract[0],'section':contract[1],'records':len(rs),'coverage':[min(dates),max(dates)] if dates else None,'last_update':max(dates) if dates else None,'status':'Available; completeness requires review' if rs else 'Source unavailable','missing_input':None if rs else 'Upload or enter '+contract[0]+'; review its amount/date/identifier mapping.'})
  kpis={'accounting_revenue':statements['revenue'],'operating_expenses':statements['operating_expenses'],'ebitda':statements['ebitda'],'net_result':statements['net_result'],'operational_billing':operational,'operational_contribution':contribution,'known_operational_cost':op_cost,'bank_verified_balance':verified_cash,'receivables':money(receivable) if ar or standalone_ar else None,'payables':money(payable) if ap or standalone_ap else None,'inventory_value':known_total(inventory,'recorded_inventory_value'),'debt_principal':known_total(loans,'closing_principal'),'dso':dso,'unallocated_receipts':money(sum(((D(r.get('amount')) or Z)-allocated_cash[r['id']] for r in of('receipt',True) if r.get('receipt_type') not in ('transfer','loan')),Z)) if of('receipt',True) else None}

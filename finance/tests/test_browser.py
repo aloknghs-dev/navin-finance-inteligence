@@ -23,9 +23,15 @@ def test_browser_modules_and_real_isolation(tmp_path):
     page=browser.new_page(viewport={'width':1440,'height':1000});errors=[];page.on('pageerror',lambda e:errors.append(str(e)))
     page.goto(url);page.locator('[name=username]').fill('admin');page.locator('[name=password]').fill('browser-only-test-password');page.locator('#loginForm button').click()
     page.locator('#nav [data-nav]').first.wait_for();page.wait_for_function("() => document.querySelector('#content').textContent.includes('Synthetic demonstration')")
-    pages=page.locator('#nav [data-nav]').evaluate_all('(els)=>els.map(e=>e.dataset.nav)');assert len(pages)==13
+    pages=page.locator('#nav [data-nav]').evaluate_all('(els)=>els.map(e=>e.dataset.nav)');assert len(pages)==14
     for name in pages:
      page.locator(f'[data-nav={name}]').click();page.wait_for_function("() => !document.querySelector('#content').textContent.includes('Loading financial')");assert 'Synthetic demonstration' in page.locator('#content').inner_text()
+    page.locator('[data-nav=desk]').click();page.locator('[data-enter=billing]').click()
+    assert page.locator('#recordForm [name=date]').get_attribute('type')=='date'
+    page.locator('#recordForm [name=uhid]').fill('000123')
+    page.locator('[data-inline-master=panel]').click();page.locator('#backToEntry').click()
+    assert page.locator('#recordForm [name=uhid]').input_value()=='000123'
+    page.locator('#closeModal').click()
     page.locator('[data-nav=overview]').click();page.wait_for_function("() => document.querySelector('#content').textContent.includes('Synthetic demonstration')")
     screens=Path(os.environ.get('NAVIN_PREVIEW_DIR',str(tmp_path/'screenshots')));screens.mkdir(parents=True,exist_ok=True);page.screenshot(path=str(screens/'preview.png'),full_page=True)
     page.locator('#workspaceMode').select_option('real');page.wait_for_function("() => document.querySelector('#content').textContent.includes('Real finance records')");assert 'Unknown' in page.locator('#content').inner_text()

@@ -7,6 +7,8 @@ def seed(c):
  for key,name in [('clinical','Clinical'),('pharmacy','Main Pharmacy'),('ct','CT Scan'),('admin','Administration')]:master('department',key,name)
  for key,name in [('ayushman','Ayushman'),('cghs','CGHS'),('echs','ECHS'),('esic','ESIC'),('selfpay','Self-pay')]:master('panel',key,name)
  master('vendor','med-supply','Demonstration medical supplier',approved=True,clinical_criticality=True)
+ master('employee','EMP1','Demonstration employee',branch_id='dadri')
+ master('consultant','DR1','Demonstration consultant',branch_id='dadri')
  master('bank_account','bank-1','Demonstration operating bank',entity_id='demo-entity',branch_id='dadri')
  for key,name,category in [('cash','Cash & bank','cash'),('ar','Patient receivables','asset'),('inventory','Medicine inventory','asset'),('equipment','Medical equipment','asset'),('ap','Vendor payable','liability'),('loan','Term loan','liability'),('equity','Opening capital','equity'),('revenue','Hospital revenue','revenue'),('consumption','Consumables used','direct_cost'),('payroll','Payroll','operating_expense'),('expense','Operating expense','operating_expense'),('depreciation','Depreciation','depreciation'),('interest','Interest','finance_cost')]:master('account',key,name,statement_category=category)
  for key,value in [('accounting_complete',True),('opening_complete',True),('credit_revenue_complete',True)]:c.execute("UPDATE settings SET value=? WHERE workspace='demo' AND key=?",(dump(value),key))
